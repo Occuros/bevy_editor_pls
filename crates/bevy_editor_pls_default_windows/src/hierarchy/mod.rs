@@ -1,24 +1,32 @@
 // pub mod picking;
 
+mod component_type_entry;
+mod egui_autocomplete;
+mod filter_node;
+
 use bevy::ecs::entity::Entities;
+use bevy::ecs::world::FilteredEntityRef;
 use bevy::pbr::wireframe::Wireframe;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
 use bevy::render::{Extract, RenderApp};
-use bevy_inspector_egui::bevy_inspector::guess_entity_name;
-use bevy_inspector_egui::bevy_inspector::hierarchy::SelectedEntities;
-use bevy_inspector_egui::egui::text::CCursorRange;
-use bevy_inspector_egui::egui::{self, ScrollArea};
-
+use bevy::utils::HashSet;
 use bevy_editor_pls_core::{
     editor_window::{EditorWindow, EditorWindowContext},
     Editor,
 };
-// use bevy_mod_picking::backends::egui::EguiPointer;
-// use bevy_mod_picking::prelude::{IsPointerEvent, PointerClick, PointerButton};
+use bevy_inspector_egui::bevy_inspector::guess_entity_name;
+use bevy_inspector_egui::bevy_inspector::hierarchy::SelectedEntities;
+use bevy_inspector_egui::egui::text::CCursorRange;
+use bevy_inspector_egui::egui::{self, Key, ScrollArea};
+use std::any::Any;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::add::{add_ui, AddWindow, AddWindowState};
 use crate::debug_settings::DebugSettingsWindow;
+use crate::hierarchy::component_type_entry::ComponentTypeEntry;
+use crate::hierarchy::egui_autocomplete::AutoCompleteTextEdit;
+use crate::hierarchy::filter_node::FilterNode;
 use crate::inspector::{InspectorSelection, InspectorWindow};
 
 #[derive(Component)]
@@ -40,6 +48,8 @@ impl EditorWindow for HierarchyWindow {
                     (a, b, None)
                 }
             };
+
+        initialize_filter_state_if_needed(&mut hierarchy_state.filter_state, world);
 
         ScrollArea::vertical().show(ui, |ui| {
             let type_registry = world.resource::<AppTypeRegistry>().clone();
@@ -125,12 +135,24 @@ fn extract_wireframe_for_selected(editor: Extract<Res<Editor>>, mut commands: Co
 pub struct HierarchyState {
     pub selected: SelectedEntities,
     rename_info: Option<RenameInfo>,
+    filter_state: FilterState,
 }
 
 pub struct RenameInfo {
     entity: Entity,
     renaming: bool,
     current_rename: String,
+}
+
+#[derive(Default)]
+pub struct FilterState {
+    pub search_text: String,
+    pub filters: Vec<FilterNode>,
+    pub next_filter: Option<FilterNode>,
+    //this can be cached? might require verification
+    pub all_components: HashMap<String, ComponentTypeEntry>,
+    pub request_focus_next_frame: bool,
+    hide_in_editor_component: ComponentTypeEntry,
 }
 
 struct Hierarchy<'a> {
@@ -148,7 +170,51 @@ impl<'a> Hierarchy<'a> {
         let HierarchyState {
             selected,
             rename_info,
+            filter_state,
         } = self.state;
+
+        ui.with_layout(
+            egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+            |ui| {
+                filter_state
+                    .filters
+                    .retain(|f| !ui.button(&f.short_form_with_value()).clicked())
+            },
+        );
+
+        ui.horizontal(|ui| {
+            if let Some(filter) = &filter_state.next_filter {
+                if ui.button(filter.short_form()).clicked() {
+                    filter_state.next_filter = None;
+                }
+            }
+
+            if filter_state.next_filter.is_none() {
+                handle_next_filter_selection(filter_state, ui);
+            } else {
+                handle_component_filter(filter_state, self.world, ui);
+            }
+        });
+
+        //allow backspace to remove previous filter
+        let delete_pressed = ui.input_mut(|input| input.key_pressed(Key::Backspace))
+            || ui.input_mut(|input| input.key_pressed(Key::Delete));
+
+        if filter_state.search_text.is_empty() && !filter_state.filters.is_empty() && delete_pressed
+        {
+            filter_state.filters.pop();
+        }
+        let mut filters = filter_state.filters.clone();
+        let index_fields = filters
+            .iter()
+            .filter(|f| matches!(f, FilterNode::Index(_)))
+            .count();
+        let only_index = index_fields > 0 && filters.iter().count() == index_fields;
+        filters.push(FilterNode::Without(
+            filter_state.hide_in_editor_component.clone(),
+        ));
+
+        let entities = gather_entities_from_filters(&filters, self.world, only_index);
 
         let new_selection = bevy_inspector_egui::bevy_inspector::hierarchy::Hierarchy {
             extra_state: rename_info,
@@ -195,7 +261,8 @@ impl<'a> Hierarchy<'a> {
                 false
             }),
         }
-        .show::<Without<HideInEditor>>(ui);
+        // .show::<Without<HideInEditor>>(ui);
+        .show_with_query_state(ui, &mut entities.into_iter().collect());
 
         if let Some(entity) = despawn_recursive {
             bevy::hierarchy::despawn_with_children_recursive(self.world, entity);
@@ -213,6 +280,141 @@ impl<'a> Hierarchy<'a> {
         }
 
         new_selection
+    }
+}
+
+pub fn handle_next_filter_selection(state: &mut FilterState, ui: &mut egui::Ui) {
+    let mut inputs = BTreeSet::new();
+
+    for s in FilterNode::short_forms().iter() {
+        inputs.insert(s.to_owned());
+    }
+
+    let auto_complete = AutoCompleteTextEdit::new(&mut state.search_text, inputs)
+        .max_suggestions(5)
+        .auto_select_first_entry(true)
+        .highlight_matches(true);
+
+    let response = ui.add(auto_complete);
+    if state.request_focus_next_frame {
+        response.request_focus();
+        state.request_focus_next_frame = false;
+    }
+    let mut next_filter = None;
+
+    let accepted_by_keyboard = ui.input_mut(|input| input.key_pressed(Key::Enter))
+        || ui.input_mut(|input| input.key_pressed(Key::Tab));
+    if accepted_by_keyboard || response.clicked() {
+        next_filter = FilterNode::try_from(&state.search_text);
+    }
+
+    if next_filter.is_some() {
+        state.next_filter = next_filter;
+        state.search_text.clear();
+        state.request_focus_next_frame = true;
+    }
+}
+
+pub fn handle_component_filter(state: &mut FilterState, world: &mut World, ui: &mut egui::Ui) {
+    let Some(filter) = state.next_filter.as_ref() else {
+        return;
+    };
+    let mut inputs = BTreeSet::new();
+
+    match filter {
+        FilterNode::Index(_) => {
+            for e in world.iter_entities() {
+                inputs.insert(e.id().index().to_string());
+            }
+        }
+        _ => {
+            for c in state.all_components.values() {
+                if c.is_ambiguous {
+                    inputs.insert(c.full_path.clone());
+                } else {
+                    inputs.insert(c.short_name.clone());
+                }
+            }
+        }
+    }
+
+    // let mut selected_option = None;
+    let auto_complete = AutoCompleteTextEdit::new(&mut state.search_text, inputs)
+        .max_suggestions(5)
+        .auto_select_first_entry(true)
+        .highlight_matches(true);
+
+    let response = ui.add(auto_complete);
+
+    if state.request_focus_next_frame {
+        response.request_focus();
+        state.request_focus_next_frame = false;
+    }
+
+    let accepted_by_keyboard = ui.input_mut(|input| input.key_pressed(Key::Enter))
+        || ui.input_mut(|input| input.key_pressed(Key::Tab));
+
+    if !state.search_text.is_empty() && (accepted_by_keyboard || response.clicked()) {
+        match filter {
+            FilterNode::Index(_) => {
+                let Ok(index) = state.search_text.parse() else {
+                    return;
+                };
+                state.filters.push(FilterNode::Index(index));
+            }
+
+            FilterNode::With(_) => {
+                let Some(component) = state.all_components.get(&state.search_text) else {
+                    return;
+                };
+                state.filters.push(FilterNode::With(component.clone()))
+            }
+            FilterNode::Without(_) => {
+                let Some(component) = state.all_components.get(&state.search_text) else {
+                    return;
+                };
+                state.filters.push(FilterNode::Without(component.clone()))
+            }
+        };
+        state.next_filter = None;
+        state.search_text.clear();
+        state.request_focus_next_frame = true;
+    }
+}
+
+fn initialize_filter_state_if_needed(state: &mut FilterState, world: &World) {
+    let type_registry = world.resource::<AppTypeRegistry>().clone();
+    let type_registry = type_registry.read();
+    let hide_type_id = HideInEditor.type_id();
+    if state.all_components.is_empty() {
+        for t in type_registry.iter() {
+            let short_path = t.type_info().type_path_table().short_path();
+            let full_path = t.type_info().type_path();
+            let is_ambiguous = type_registry.is_ambiguous(short_path);
+            let key = if is_ambiguous {
+                t.type_info().type_path()
+            } else {
+                short_path
+            }
+            .to_owned();
+
+            let component_id = type_registry
+                .get_with_type_path(full_path)
+                .map(|t| world.components().get_id(t.type_id()))
+                .flatten();
+
+            let component = ComponentTypeEntry {
+                full_path: full_path.to_owned(),
+                short_name: short_path.to_owned(),
+                is_ambiguous,
+                component_id,
+            };
+            if t.type_id() == hide_type_id {
+                state.hide_in_editor_component = component.clone();
+            }
+
+            state.all_components.insert(key, component);
+        }
     }
 }
 
@@ -258,4 +460,40 @@ fn rename_entity_ui(ui: &mut egui::Ui, rename_info: &mut RenameInfo, world: &mut
     }
 
     TextEdit::store_state(ui.ctx(), id, edit_state);
+}
+
+pub fn gather_entities_from_filters(
+    filters: &Vec<FilterNode>,
+    world: &mut World,
+    only_indexed: bool,
+) -> HashSet<Entity> {
+    let mut query = QueryBuilder::<FilteredEntityRef>::new(world);
+    let mut entities = HashSet::new();
+    for filter in filters.iter() {
+        match filter {
+            FilterNode::Index(id) => {
+                entities.insert(Entity::from_raw(*id));
+            }
+            FilterNode::With(component) => {
+                let Some(component_id) = component.component_id else {
+                    continue;
+                };
+                query.with_id(component_id);
+            }
+            FilterNode::Without(component) => {
+                let Some(component_id) = component.component_id else {
+                    continue;
+                };
+                query.without_id(component_id);
+            }
+        }
+    }
+
+    if !only_indexed {
+        for entity_ref in query.build().iter(world) {
+            entities.insert(entity_ref.id());
+        }
+    }
+
+    entities
 }
