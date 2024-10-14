@@ -19,7 +19,7 @@ use bevy_inspector_egui::bevy_inspector::guess_entity_name;
 use bevy_inspector_egui::bevy_inspector::hierarchy::SelectedEntities;
 use bevy_inspector_egui::egui::text::CCursorRange;
 use bevy_inspector_egui::egui::{self, Key, ScrollArea};
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, HashMap};
 
 use crate::add::{add_ui, AddWindow, AddWindowState};
@@ -153,6 +153,7 @@ pub struct FilterState {
     pub all_components: HashMap<String, ComponentTypeEntry>,
     pub request_focus_next_frame: bool,
     hide_in_editor_component: ComponentTypeEntry,
+    parent_component: ComponentTypeEntry,
 }
 
 struct Hierarchy<'a> {
@@ -196,20 +197,16 @@ impl<'a> Hierarchy<'a> {
             }
         });
 
-        //allow backspace to remove previous filter
-        let delete_pressed = ui.input_mut(|input| input.key_pressed(Key::Backspace))
-            || ui.input_mut(|input| input.key_pressed(Key::Delete));
-
-        if filter_state.search_text.is_empty() && !filter_state.filters.is_empty() && delete_pressed
-        {
-            filter_state.filters.pop();
-        }
         let mut filters = filter_state.filters.clone();
         let index_fields = filters
             .iter()
             .filter(|f| matches!(f, FilterNode::Index(_)))
             .count();
         let only_index = index_fields > 0 && filters.iter().count() == index_fields;
+
+        if filters.len() == 0 {
+            filters.push(FilterNode::Without(filter_state.parent_component.clone()))
+        }
         filters.push(FilterNode::Without(
             filter_state.hide_in_editor_component.clone(),
         ));
@@ -385,7 +382,6 @@ pub fn handle_component_filter(state: &mut FilterState, world: &mut World, ui: &
 fn initialize_filter_state_if_needed(state: &mut FilterState, world: &World) {
     let type_registry = world.resource::<AppTypeRegistry>().clone();
     let type_registry = type_registry.read();
-    let hide_type_id = HideInEditor.type_id();
     if state.all_components.is_empty() {
         for t in type_registry.iter() {
             let short_path = t.type_info().type_path_table().short_path();
@@ -409,8 +405,12 @@ fn initialize_filter_state_if_needed(state: &mut FilterState, world: &World) {
                 is_ambiguous,
                 component_id,
             };
-            if t.type_id() == hide_type_id {
+            if t.type_id() == HideInEditor.type_id() {
                 state.hide_in_editor_component = component.clone();
+            }
+
+            if t.type_id() == TypeId::of::<Parent>() {
+                state.parent_component = component.clone();
             }
 
             state.all_components.insert(key, component);
@@ -488,7 +488,6 @@ pub fn gather_entities_from_filters(
             }
         }
     }
-
     if !only_indexed {
         for entity_ref in query.build().iter(world) {
             entities.insert(entity_ref.id());
