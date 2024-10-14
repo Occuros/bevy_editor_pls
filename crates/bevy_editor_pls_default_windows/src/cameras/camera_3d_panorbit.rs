@@ -25,7 +25,7 @@ pub struct PanOrbitCamera {
     pub focus: Vec3,
     pub radius: f32,
     pub upside_down: bool,
-
+    pub zoom_speed: f32,
     pub orbit_button: MouseButton,
     pub pan_button: MouseButton,
 }
@@ -34,7 +34,7 @@ impl Default for PanOrbitCamera {
     fn default() -> Self {
         PanOrbitCamera {
             enabled: true,
-
+            zoom_speed: 1.0,
             focus: Vec3::ZERO,
             radius: 5.0,
             upside_down: false,
@@ -143,7 +143,7 @@ fn pan_orbit_camera(
         pan_orbit.focus += translation;
     } else if scroll.abs() > 0.0 {
         any = true;
-        pan_orbit.radius -= scroll * pan_orbit.radius * 0.1;
+        pan_orbit.radius -= scroll * pan_orbit.radius * pan_orbit.zoom_speed * 0.1;
         // dont allow zoom to reach zero or you get stuck
         pan_orbit.radius = f32::max(pan_orbit.radius, 0.05);
     }
