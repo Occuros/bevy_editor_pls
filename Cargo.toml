@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.9.0"
+version = "0.11.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/jakobhellermann/bevy_editor_pls"
@@ -11,14 +11,17 @@ description = "In-App editor tools for bevy apps"
 readme = "README.md"
 
 [workspace.dependencies]
-bevy_editor_pls = { version = "0.9.0", path = "crates/bevy_editor_pls" }
-bevy_editor_pls_core = { version = "0.9.0", path = "crates/bevy_editor_pls_core" }
-bevy_editor_pls_default_windows = { version = "0.9.0", path = "crates/bevy_editor_pls_default_windows" }
-bevy-inspector-egui = { git = "https://github.com/Occuros/bevy-inspector-egui.git" }
-egui = "0.28"
-egui_dock = "0.13"
-# used to be egui-gizmo 0.16
-transform-gizmo-bevy = "0.3"
+bevy_editor_pls = { version = "0.11.0", path = "crates/bevy_editor_pls" }
+bevy_editor_pls_core = { version = "0.11.0", path = "crates/bevy_editor_pls_core" }
+bevy_editor_pls_default_windows = { version = "0.11.0", path = "crates/bevy_editor_pls_default_windows" }
+
+bevy-inspector-egui = { git = "https://github.com/Occuros/bevy-inspector-egui.git", branch = "allow-hierarchy-filtering" }
+egui = "0.29"
+egui_dock = "0.14"
+transform-gizmo-bevy = { git = "https://github.com/ActuallyHappening/transform-gizmo" }
+
+[patch.crates-io]
+transform-gizmo-bevy = { git = "https://github.com/ActuallyHappening/transform-gizmo" }
 
 [profile.dev.package."*"]
 opt-level = 2
