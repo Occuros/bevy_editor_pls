@@ -70,6 +70,7 @@ where
         self
     }
 
+    #[allow(dead_code)]
     /// Can be used to set the properties of the internal [`egui::TextEdit`]
     pub fn set_text_edit_properties(
         mut self,

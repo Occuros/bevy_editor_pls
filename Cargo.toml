@@ -16,8 +16,10 @@ bevy_editor_pls_core = { version = "0.11.0", path = "crates/bevy_editor_pls_core
 bevy_editor_pls_default_windows = { version = "0.11.0", path = "crates/bevy_editor_pls_default_windows" }
 
 bevy-inspector-egui = { git = "https://github.com/Occuros/bevy-inspector-egui.git", branch = "allow-hierarchy-filtering" }
-egui = "0.29"
-egui_dock = "0.14"
+#bevy-inspector-egui = { path = "../bevy-inspector-egui/crates/bevy-inspector-egui" }
+
+egui = "0.29.0"
+egui_dock = "0.14.0"
 transform-gizmo-bevy = { git = "https://github.com/ActuallyHappening/transform-gizmo" }
 
 [patch.crates-io]
